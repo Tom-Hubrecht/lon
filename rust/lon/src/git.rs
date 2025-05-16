@@ -1,5 +1,6 @@
 use std::{
     fmt,
+    io::BufRead,
     path::Path,
     process::{Command, Output},
 };
@@ -189,6 +190,119 @@ pub fn get_last_modified(url: &str, rev: &str) -> Result<u64> {
         .trim_end()
         .parse::<u64>()
         .context("Failed to parse last modified timestamp.")
+}
+
+/// List the commits between two revisions
+pub fn diff_history(
+    url: &str,
+    old_revision: &str,
+    new_revision: &str,
+    num_commits: usize,
+) -> Result<String> {
+    let tmp_dir = TempDir::new()?;
+    let mut output: Output;
+
+    // Init a new git directory
+    output = Command::new("git")
+        .arg("--git-dir")
+        .arg(tmp_dir.path())
+        .arg("init")
+        .output()
+        .context("Failed to execute git init. Most likely it's not on PATH")?;
+
+    if !output.status.success() {
+        bail!(
+            "Failed to initialize a fresh git repository\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    }
+
+    // Add the repository as a remote
+    output = Command::new("git")
+        .arg("--git-dir")
+        .arg(tmp_dir.path())
+        .args(["remote", "add", "origin", url])
+        .output()
+        .context("Failed to execute git remote add.")?;
+
+    if !output.status.success() {
+        bail!(
+            "Failed to add the remote {}\n{}",
+            url,
+            String::from_utf8_lossy(&output.stderr)
+        )
+    }
+
+    // Fetch the old revision
+    output = Command::new("git")
+        .arg("--git-dir")
+        .arg(tmp_dir.path())
+        .args([
+            "fetch",
+            "--depth=1",
+            "--no-show-forced-updates",
+            "origin",
+            old_revision,
+        ])
+        .output()
+        .context("Failed to execute git fetch.")?;
+
+    if !output.status.success() {
+        bail!(
+            "Failed to fetch the revision {}\n{}",
+            old_revision,
+            String::from_utf8_lossy(&output.stderr)
+        )
+    }
+
+    // Fetch the new revision, up to the old one
+    output = Command::new("git")
+        .arg("--git-dir")
+        .arg(tmp_dir.path())
+        .args([
+            "fetch",
+            "--no-show-forced-updates",
+            "--negotiation-tip",
+            old_revision,
+            "origin",
+            new_revision,
+        ])
+        .arg(format!("--depth={num_commits}"))
+        .output()
+        .context("Failed to execute git fetch.")?;
+
+    if !output.status.success() {
+        bail!(
+            "Failed to fetch the revision {}\n{}",
+            new_revision,
+            String::from_utf8_lossy(&output.stderr)
+        )
+    }
+
+    // Get the history
+    output = Command::new("git")
+        .arg("--git-dir")
+        .arg(tmp_dir.path())
+        .args(["rev-list", "--oneline"])
+        .arg(format!("{old_revision}..{new_revision}"))
+        .output()
+        .context("Failed to execute git rev-list.")?;
+
+    if !output.status.success() {
+        bail!(
+            "Failed to list the history for {}..{}\n{}",
+            old_revision,
+            new_revision,
+            String::from_utf8_lossy(&output.stderr)
+        )
+    }
+
+    Ok(output
+        .stdout
+        .lines()
+        .map(|s| format!("  {}", s.expect("Failed to read git rev-list output")))
+        .collect::<Vec<String>>()
+        .join("\n"))
 }
 
 pub fn add(directory: impl AsRef<Path>, args: &[&Path]) -> Result<()> {

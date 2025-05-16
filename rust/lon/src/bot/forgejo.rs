@@ -31,6 +31,8 @@ struct PullRequest {
     head: String,
     base: String,
     title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -122,13 +124,14 @@ impl Forgejo {
 }
 
 impl Forge for Forgejo {
-    fn open_pull_request(&self, branch: &str, name: &str) -> Result<String> {
+    fn open_pull_request(&self, branch: &str, name: &str, body: Option<String>) -> Result<String> {
         let repository = self.get_repository()?;
 
         let pull_request = PullRequest {
             head: branch.into(),
             base: repository.default_branch.clone(),
             title: format!("lon: update {name}"),
+            body,
         };
 
         let url = format!("{}/pulls", self.repo_api_url());

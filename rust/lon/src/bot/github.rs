@@ -31,6 +31,8 @@ struct PullRequest {
     head: String,
     base: String,
     title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
     maintainer_can_modify: bool,
 }
 
@@ -130,13 +132,14 @@ impl GitHub {
 }
 
 impl Forge for GitHub {
-    fn open_pull_request(&self, branch: &str, name: &str) -> Result<String> {
+    fn open_pull_request(&self, branch: &str, name: &str, body: Option<String>) -> Result<String> {
         let repository = self.get_repository()?;
 
         let pull_request = PullRequest {
             head: branch.into(),
             base: repository.default_branch.clone(),
             title: format!("lon: update {name}"),
+            body,
             maintainer_can_modify: true,
         };
 

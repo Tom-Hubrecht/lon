@@ -35,11 +35,12 @@ impl GitLab {
 }
 
 impl Forge for GitLab {
-    fn open_pull_request(&self, branch: &str, name: &str) -> Result<String> {
+    fn open_pull_request(&self, branch: &str, name: &str, body: Option<String>) -> Result<String> {
         let merge_request = MergeRequest {
             source_branch: branch.into(),
             target_branch: self.default_branch.clone(),
             title: format!("lon: update {name}"),
+            body,
             remove_source_branch: true,
             allow_collaboration: true,
             labels: self.labels.join(","),
@@ -71,6 +72,8 @@ struct MergeRequest {
     source_branch: String,
     target_branch: String,
     title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
     remove_source_branch: bool,
     allow_collaboration: bool,
     labels: String,

@@ -65,6 +65,10 @@ enum Commands {
     Bot {
         #[clap(subcommand)]
         commands: BotCommands,
+        #[arg(long, default_value_t = false)]
+        detailed: bool,
+        #[arg(short, default_value_t = 50)]
+        num_commits: usize,
     },
 }
 
@@ -208,10 +212,16 @@ impl Commands {
             Self::Freeze(args) => freeze(directory, &args),
             Self::Unfreeze(args) => unfreeze(directory, &args),
 
-            Self::Bot { commands } => match commands {
-                BotCommands::GitLab => bot(directory, &GitLab::from_env()?),
-                BotCommands::GitHub => bot(directory, &GitHub::from_env()?),
-                BotCommands::Forgejo => bot(directory, &Forgejo::from_env()?),
+            Self::Bot {
+                commands,
+                detailed,
+                num_commits,
+            } => match commands {
+                BotCommands::GitLab => bot(directory, &GitLab::from_env()?, detailed, num_commits),
+                BotCommands::GitHub => bot(directory, &GitHub::from_env()?, detailed, num_commits),
+                BotCommands::Forgejo => {
+                    bot(directory, &Forgejo::from_env()?, detailed, num_commits)
+                }
             },
         }
     }
@@ -405,10 +415,15 @@ fn unfreeze(directory: impl AsRef<Path>, args: &SourceArgs) -> Result<()> {
     Ok(())
 }
 
-fn bot(directory: impl AsRef<Path>, forge: &impl Forge) -> Result<()> {
+fn bot(
+    directory: impl AsRef<Path>,
+    forge: &impl Forge,
+    detailed: bool,
+    num_commits: usize,
+) -> Result<()> {
     let base_ref = git::current_rev(&directory)?;
 
-    let result = bot_fallible(&directory, forge, &base_ref);
+    let result = bot_fallible(&directory, forge, &base_ref, detailed, num_commits);
 
     // Always return to the base commit.
     git::checkout(&directory, &base_ref, false)?;
@@ -416,7 +431,13 @@ fn bot(directory: impl AsRef<Path>, forge: &impl Forge) -> Result<()> {
     result
 }
 
-fn bot_fallible(directory: impl AsRef<Path>, forge: &impl Forge, base_ref: &str) -> Result<()> {
+fn bot_fallible(
+    directory: impl AsRef<Path>,
+    forge: &impl Forge,
+    base_ref: &str,
+    detailed: bool,
+    num_commits: usize,
+) -> Result<()> {
     let sources = Sources::read(&directory)?;
 
     let names = sources
@@ -452,10 +473,19 @@ fn bot_fallible(directory: impl AsRef<Path>, forge: &impl Forge, base_ref: &str)
             .update()
             .with_context(|| format!("Failed to update {name}"))?;
 
-        let Some(summary) = summary else {
+        let Some(mut summary) = summary else {
             log::info!("No updates available");
             continue;
         };
+
+        let mut body: Option<String> = None;
+
+        if detailed {
+            let diff = source.diff(&summary, num_commits)?;
+
+            summary.details = Some(format!("Last {num_commits} commits:\n{diff}"));
+            body = Some(format!("```\n{diff}\n```"));
+        }
 
         let mut commit_message = CommitMessage::new();
 
@@ -480,7 +510,7 @@ fn bot_fallible(directory: impl AsRef<Path>, forge: &impl Forge, base_ref: &str)
         log::debug!("Force pushing repository...");
         git::force_push(&directory, push_url.as_deref(), &branch)?;
 
-        match forge.open_pull_request(&branch, name) {
+        match forge.open_pull_request(&branch, name, body) {
             Ok(pull_request_url) => log::info!("Opened Pull Request: {pull_request_url}"),
             Err(err) => log::warn!("{err}"),
         }
@@ -521,6 +551,11 @@ impl fmt::Display for CommitMessage {
                 "{} → {}",
                 summary.old_revision, summary.new_revision
             )?;
+
+            if let Some(details) = &summary.details {
+                writeln!(&mut commit_message)?;
+                write!(&mut commit_message, "{details}")?;
+            }
         } else {
             writeln!(&mut commit_message, "lon: update")?;
             writeln!(&mut commit_message)?;
@@ -529,6 +564,11 @@ impl fmt::Display for CommitMessage {
                 writeln!(&mut commit_message, "• {name}:")?;
                 writeln!(&mut commit_message, "    {}", summary.old_revision)?;
                 writeln!(&mut commit_message, "  → {}", summary.new_revision)?;
+
+                if let Some(details) = &summary.details {
+                    writeln!(&mut commit_message)?;
+                    write!(&mut commit_message, "{details}")?;
+                }
             }
         }
         write!(f, "{commit_message}")

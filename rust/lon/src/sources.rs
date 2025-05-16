@@ -1,6 +1,11 @@
 use std::{collections::BTreeMap, path::Path};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use reqwest::{
+    blocking::Client,
+    header::{self, HeaderName, HeaderValue},
+};
+use serde::Deserialize;
 
 use crate::{
     git::{self, Revision},
@@ -16,6 +21,7 @@ const GITHUB_URL: &str = "https://github.com";
 pub struct UpdateSummary {
     pub old_revision: Revision,
     pub new_revision: Revision,
+    pub details: Option<String>,
 }
 
 impl UpdateSummary {
@@ -26,6 +32,7 @@ impl UpdateSummary {
         Self {
             old_revision,
             new_revision,
+            details: None,
         }
     }
 }
@@ -86,6 +93,25 @@ pub enum Source {
     GitHub(GitHubSource),
 }
 
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+struct GitHubDiff {
+    pub commits: Vec<GitHubDiffCommitInfo>,
+}
+
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+struct GitHubDiffCommitInfo {
+    pub sha: String,
+    pub commit: GitHubDiffCommit,
+}
+
+#[allow(unused)]
+#[derive(Debug, Deserialize)]
+struct GitHubDiffCommit {
+    pub message: String,
+}
+
 impl Source {
     pub fn update(&mut self) -> Result<Option<UpdateSummary>> {
         match self {
@@ -120,6 +146,70 @@ impl Source {
         match self {
             Self::Git(s) => s.frozen,
             Self::GitHub(s) => s.frozen,
+        }
+    }
+
+    pub fn diff(&self, summary: &UpdateSummary, num_commits: usize) -> Result<String> {
+        match self {
+            Self::Git(s) => git::diff_history(
+                &s.url,
+                summary.old_revision.as_str(),
+                summary.new_revision.as_str(),
+                num_commits,
+            ),
+            Self::GitHub(s) => {
+                let mut headers = header::HeaderMap::new();
+                headers.insert(
+                    header::ACCEPT,
+                    HeaderValue::from_static("application/vnd.github+json"),
+                );
+                headers.insert(
+                    HeaderName::from_static("x-github-api-version"),
+                    HeaderValue::from_static("2022-11-28"),
+                );
+
+                let client = Client::builder()
+                    .user_agent("LonBot")
+                    .default_headers(headers)
+                    .build()
+                    .context("Failed to build the HTTP client")?;
+
+                let url = format!(
+                    "https://api.github.com/repos/{}/{}/compare/{}...{}",
+                    s.owner, s.repo, summary.old_revision, summary.new_revision
+                );
+
+                let res = client
+                    .get(&url)
+                    .send()
+                    .with_context(|| format!("Failed to send POST request to {url}"))?;
+
+                let status = res.status();
+                if !status.is_success() {
+                    bail!("Failed to compare at {url}: {status}:\n{}", res.text()?)
+                }
+
+                let diff: GitHubDiff = serde_json::from_str(&res.text()?)?;
+
+                Ok(diff
+                    .commits
+                    .iter()
+                    .map(|info| {
+                        format!(
+                            "  {} {}",
+                            &info.sha[..7],
+                            info.commit
+                                .message
+                                .lines()
+                                .next()
+                                .expect("Failed to get commit message")
+                        )
+                    })
+                    .rev()
+                    .take(num_commits)
+                    .collect::<Vec<String>>()
+                    .join("\n"))
+            }
         }
     }
 }
